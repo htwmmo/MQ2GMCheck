@@ -19,9 +19,7 @@
 PreSetup("MQ2GMCheck");
 PLUGIN_VERSION(5.00);
 
-#pragma comment(lib,"winmm.lib")
-
-const char PluginMsg[] = "\ay[\aoMQ2GMCheck\ax] ";
+constexpr const char* PluginMsg = "\ay[\aoMQ2GMCheck\ax] ";
 
 char szEnterSound[MAX_STRING] = { 0 };
 char szLeaveSound[MAX_STRING] = { 0 };
@@ -35,7 +33,7 @@ char szGMEnterCmdIf[MAX_STRING] = { 0 };
 char szGMLeaveCmd[MAX_STRING] = { 0 };
 char szGMLeaveCmdIf[MAX_STRING] = { 0 };
 
-uint32_t  Reminder_Interval = 0;
+int Reminder_Interval = 0;
 uint32_t bmMQ2GMCheck = 0;
 
 uint64_t Check_PulseCount = 0;
@@ -45,7 +43,6 @@ uint64_t StopSoundTimer = 0;
 DWORD dwVolume;
 DWORD NewVol;
 
-bool bGMAlert = false;
 bool bGMCheck = true;
 bool bGMQuiet = false;
 bool bGMSound = true;
@@ -417,9 +414,15 @@ void LoadSettings()
 	WriteChatf("%s\amSettings loaded.", PluginMsg);
 }
 
+void PlayErrorSound(const char* sound = "SystemDefault")
+{
+	PlaySound(nullptr, nullptr, SND_NODEFAULT);
+	PlaySound(sound, nullptr, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
+}
+
 void StopGMSound()
 {
-	mciSendString("Close mySound", NULL, 0, NULL);
+	mciSendString("Close mySound", nullptr, 0, nullptr);
 }
 
 void PlayGMSound(char* pFileName)
@@ -430,10 +433,10 @@ void PlayGMSound(char* pFileName)
 	StopGMSound();
 	if (!bVolSet)
 	{
-		if (waveOutGetVolume(NULL, &dwVolume) == MMSYSERR_NOERROR)
+		if (waveOutGetVolume(nullptr, &dwVolume) == MMSYSERR_NOERROR)
 		{
 			bVolSet = true;
-			waveOutSetVolume(NULL, NewVol);
+			waveOutSetVolume(nullptr, NewVol);
 		}
 	}
 
@@ -455,29 +458,20 @@ void PlayGMSound(char* pFileName)
 
 	if (bFound)
 	{
-		int error = mciSendString(lpszOpenCommand, NULL, 0, NULL);
+		int error = mciSendString(lpszOpenCommand, nullptr, 0, nullptr);
 		if (!error)
 		{
-			error = mciSendString("status mySound length", szMsg, MAX_STRING, NULL);
+			error = mciSendString("status mySound length", szMsg, MAX_STRING, nullptr);
 			if (!error)
 			{
-				if ((unsigned)GetIntFromString(szMsg, 0) < 9000)
-					StopSoundTimer = MQGetTickCount64() + (unsigned)GetIntFromString(szMsg, 0);
-				else
-					StopSoundTimer = MQGetTickCount64() + 9000;
+				const int i = std::clamp(0, 9000, GetIntFromString(szMsg, 0));
 
-				if (!_stricmp(ext, ".mp3"))
-				{
-					if ((unsigned)GetIntFromString(szMsg, 0) < 9000)
-						sprintf_s(lpszPlayCommand, "play mySound from 0 notify");
-				}
-				else
-				{
-					if ((unsigned)GetIntFromString(szMsg, 0) < 9000)
-						sprintf_s(lpszPlayCommand, "play mySound from 0 notify");
-				}
+				StopSoundTimer = MQGetTickCount64() + i;
 
-				error = mciSendString(lpszPlayCommand, NULL, 0, NULL);
+				if (i < 9000)
+					sprintf_s(lpszPlayCommand, "play mySound from 0 notify");
+
+				error = mciSendString(lpszPlayCommand, nullptr, 0, nullptr);
 			}
 		}
 
@@ -487,35 +481,29 @@ void PlayGMSound(char* pFileName)
 
 	if (!bFound)
 	{
-		PlaySound(NULL, NULL, SND_NODEFAULT);
-		PlaySound("SystemDefault", NULL, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
+		PlayErrorSound();
 		StopSoundTimer = MQGetTickCount64() + 1000;
 	}
 }
 
-void ToggleBool(char* szLine, bool* theOption, char* msg)
+void ToggleBool(char* szLine, bool* theOption, const char* msg)
 {
 	char szArg[MAX_STRING] = { 0 };
 	GetArg(szArg, szLine, 1);
 
-	if (!szArg[0])
-		*theOption = !*theOption;
-	else if (!_strnicmp(szArg, "on", 2))
-		*theOption = true;
-	else if (!_strnicmp(szArg, "off", 3))
-		*theOption = false;
-
-	WriteChatf("%s\am%s is now %s", PluginMsg, *theOption ? "\agEnabled" : "\arDISABLED");
+	*theOption = GetBoolFromString(szArg, !*theOption);
+	WriteChatf("%s\am%s is now %s", PluginMsg, msg, *theOption ? "\agEnabled" : "\arDisabled");
 }
 
+// FIXME: This function needs cleanup
 char* DisplayTime()
 {
-	static char* CurrentTime = NULL;
+	static char* CurrentTime = nullptr;
 	if (!CurrentTime)
 		CurrentTime = new char[MAX_STRING];
 
 	if (!CurrentTime)
-		return(NULL);
+		return nullptr;
 
 	struct tm currentTime;
 	time_t long_time;
@@ -527,14 +515,15 @@ char* DisplayTime()
 	return(CurrentTime);
 }
 
+// FIXME:  This function needs cleanup, but is also identical to DisplayTime outside of the formatting
 char* DisplayDate()
 {
-	static char* CurrentDate = NULL;
+	static char* CurrentDate = nullptr;
 	if (!CurrentDate)
 		CurrentDate = new char[MAX_STRING];
 
 	if (!CurrentDate)
-		return(NULL);
+		return(nullptr);
 
 	struct tm currentDate;
 	time_t long_time;
@@ -788,8 +777,7 @@ void UpdateAlerts()
 
 		if (!bGMQuiet && bGMBeep)
 		{
-			PlaySound(NULL, NULL, SND_NODEFAULT);
-			PlaySound("SystemDefault", NULL, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
+			PlayErrorSound();
 		}
 
 		if (bGMPopup)
@@ -852,9 +840,6 @@ void HistoryGMs(HistoryType histValue)
 		vKeys = GetPrivateProfileKeys(szSection, INIFileName);
 		break;
 	}
-	default:
-		WriteChatf("%s\ar Sorry we have encountered an error. Please submit an issue to git [Line: %d] %s, histValue: %i", PluginMsg, __LINE__, __FUNCTION__, histValue);
-		return;
 	}
 
 	std::vector<std::string> Outputs;
@@ -898,9 +883,6 @@ void HistoryGMs(HistoryType histValue)
 		case eHistory_Zone:
 			sprintf_s(szTemp, "%sGM \ap%s\ax - seen \a-t%s\ax times in this zone, last seen \a-t%s", PluginMsg, GMName.c_str(), SeenCount, LastSeenDate);
 			break;
-		default:
-			WriteChatf("%s\ar Sorry we have encountered an error. Please submit an issue to git [Line: \at%d\ax] \at%s", PluginMsg, __LINE__, __FUNCTION__);
-			return;
 		}
 
 		Outputs.push_back(szTemp);
@@ -1039,22 +1021,26 @@ void GMCheckCmd(PlayerClient* pChar, char* szLine)
 void SetupVolumesFromINI()
 {
 	//LeftVolume
-	DWORD i = (DWORD)GetPrivateProfileInt("Settings", "LeftVolume", 50, INIFileName);
+	int i = GetPrivateProfileInt("Settings", "LeftVolume", -1, INIFileName);
 	if (i > 100 || i < 0)
+	{
 		i = 50;
+		WritePrivateProfileInt("Settings", "LeftVolume", i, INIFileName);
+	}
 
-	WritePrivateProfileInt("Settings", "LeftVolume", i, INIFileName);
-	float x = (float)65535.0 * ((float)i / (float)100.0);
-	NewVol = (DWORD)x;
+	float x = 65535.0f * (static_cast<float>(i) / 100.0f);
+	NewVol = static_cast<DWORD>(x);
 
 	//RightVolume
-	i = (DWORD)GetPrivateProfileInt("Settings", "RightVolume", 50, INIFileName);
+	i = GetPrivateProfileInt("Settings", "RightVolume", -1, INIFileName);
 	if (i > 100 || i < 0)
+	{
 		i = 50;
+		WritePrivateProfileInt("Settings", "RightVolume", i, INIFileName);
+	}
 
-	WritePrivateProfileInt("Settings", "RightVolume", i, INIFileName);
-	x = (float)65535.0 * ((float)i / (float)100.0);
-	NewVol = NewVol + (((DWORD)x) << 16);
+	x = 65535.0f * (static_cast<float>(i) / 100.0f);
+	NewVol = NewVol + (static_cast<DWORD>(x) << 16);
 }
 
 
@@ -1076,9 +1062,6 @@ PLUGIN_API VOID InitializePlugin()
 	bmMQ2GMCheck = AddMQ2Benchmark(mqplugin::PluginName);
 	pGMCheckType = new MQ2GMCheckType;
 	AddCommand("/gmcheck", GMCheckCmd);
-
-	if (gGameState == GAMESTATE_INGAME)
-		bGMAlert = GMCheck();
 }
 
 PLUGIN_API VOID ShutdownPlugin()
@@ -1091,7 +1074,7 @@ PLUGIN_API VOID ShutdownPlugin()
 	RemoveMQ2Benchmark(bmMQ2GMCheck);
 	delete pGMCheckType;
 	if (bVolSet)
-		waveOutSetVolume(NULL, dwVolume);
+		waveOutSetVolume(nullptr, dwVolume);
 }
 
 PLUGIN_API VOID OnPulse()
@@ -1101,7 +1084,7 @@ PLUGIN_API VOID OnPulse()
 	if (bVolSet && StopSoundTimer && MQGetTickCount64() >= StopSoundTimer)
 	{
 		StopSoundTimer = 0;
-		waveOutSetVolume(NULL, dwVolume);
+		waveOutSetVolume(nullptr, dwVolume);
 	}
 
 	if (!Reminder_Interval)
@@ -1113,7 +1096,7 @@ PLUGIN_API VOID OnPulse()
 		if (MQGetTickCount64() >= Check_PulseCount + Reminder_Interval && Reminder_Interval)
 		{
 			Check_PulseCount = MQGetTickCount64();
-			if (bGMAlert = GMCheck() && !bGMQuiet && bGMCheck)
+			if (GMCheck() && !bGMQuiet && bGMCheck)
 			{
 				char szNames[MAX_STRING] = { 0 };
 				for (const std::string& GMName : GMNames)
@@ -1178,7 +1161,7 @@ PLUGIN_API VOID OnAddSpawn(PlayerClient* pSpawn)
 			strcpy_s(szTmp, szGMEnterCmdIf);
 			if (MCEval(szTmp) && szGMEnterCmd[0] && szGMEnterCmd[0] == '/')
 			{
-				DoCommand((GetCharInfo() && GetCharInfo()->pSpawn) ? GetCharInfo()->pSpawn : NULL, szGMEnterCmd);
+				EzCommand(szGMEnterCmd);
 				bGMCmdActive = true;
 			}
 		}
@@ -1195,8 +1178,7 @@ PLUGIN_API VOID OnAddSpawn(PlayerClient* pSpawn)
 
 		if (!bGMQuiet && bGMBeep)
 		{
-			PlaySound(NULL, NULL, SND_NODEFAULT);
-			PlaySound("SystemAsterisk", NULL, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
+			PlayErrorSound("SystemAsterisk");
 		}
 
 		if (bGMPopup)
@@ -1252,8 +1234,7 @@ PLUGIN_API VOID OnRemoveSpawn(PlayerClient* pSpawn)
 
 		if (!bGMQuiet && bGMBeep)
 		{
-			PlaySound(NULL, NULL, SND_NODEFAULT);
-			PlaySound("SystemDefault", NULL, SND_ALIAS | SND_ASYNC | SND_NODEFAULT);
+			PlayErrorSound();
 		}
 
 		if (bGMPopup)
