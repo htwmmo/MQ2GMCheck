@@ -486,7 +486,7 @@ void PlayGMSound(char* pFileName)
 	}
 }
 
-void ToggleBool(char* szLine, bool* theOption, const char* msg)
+void ToggleBool(const char* szLine, bool* theOption, const char* msg)
 {
 	char szArg[MAX_STRING] = { 0 };
 	GetArg(szArg, szLine, 1);
