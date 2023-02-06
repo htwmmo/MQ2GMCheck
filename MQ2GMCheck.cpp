@@ -12,6 +12,9 @@
 // and Shutdown for setup and cleanup.
 //
 
+// TODO:  Sound settings are loaded by character but saved globally (in the /gmcheck save command and write settings)
+//        need separate settings to handle this (an interim fix might be to just track when it was loaded by char)
+
 #include <mq/Plugin.h>
 #include <vector>
 #include <mmsystem.h>
@@ -21,9 +24,10 @@ PLUGIN_VERSION(5.00);
 
 constexpr const char* PluginMsg = "\ay[\aoMQ2GMCheck\ax] ";
 
-char szEnterSound[MAX_STRING] = { 0 };
-char szLeaveSound[MAX_STRING] = { 0 };
-char szRemindSound[MAX_STRING] = { 0 };
+std::filesystem::path Sound_GMEnter = std::filesystem::path(gPathResources) / "Sounds/gmenter.mp3";
+std::filesystem::path Sound_GMLeave = std::filesystem::path(gPathResources) / "Sounds/gmleave.mp3";
+std::filesystem::path Sound_GMRemind = std::filesystem::path(gPathResources) / "Sounds/gmremind.mp3";
+
 char szLastGMName[MAX_STRING] = { 0 };
 char szLastGMTime[MAX_STRING] = { 0 };
 char szLastGMDate[MAX_STRING] = { 0 };
@@ -201,19 +205,19 @@ public:
 			return true;
 
 		case GMCheckMembers::Enter:
-			strcpy_s(DataTypeTemp, szEnterSound);
+			strcpy_s(DataTypeTemp, Sound_GMEnter.string().c_str());
 			Dest.Ptr = DataTypeTemp;
 			Dest.Type = pStringType;
 			return true;
 
 		case GMCheckMembers::Leave:
-			strcpy_s(DataTypeTemp, szLeaveSound);
+			strcpy_s(DataTypeTemp, Sound_GMLeave.string().c_str());
 			Dest.Ptr = DataTypeTemp;
 			Dest.Type = pStringType;
 			return true;
 
 		case GMCheckMembers::Remind:
-			strcpy_s(DataTypeTemp, szRemindSound);
+			strcpy_s(DataTypeTemp, Sound_GMRemind.string().c_str());
 			Dest.Ptr = DataTypeTemp;
 			Dest.Type = pStringType;
 			return true;
@@ -316,6 +320,118 @@ void GMCheckStatus(bool MentionHelp = false)
 		WriteChatf("%s\ayUse '/gmcheck help' for command help", PluginMsg);
 }
 
+[[nodiscard]] std::filesystem::path SearchSoundPaths(std::filesystem::path file_path)
+{
+	std::error_code ec;
+	const std::filesystem::path resources_path = gPathResources;
+
+	// If they gave an absolute path, no sense checking other locations
+	if (file_path.is_relative())
+	{
+		// Try relative to the Sounds directory first
+		if (exists(resources_path / "Sounds" / file_path, ec))
+		{
+			file_path = resources_path / "Sounds" / file_path;
+		}
+		// Then relative to the resources directory
+		else if (exists(resources_path / file_path, ec))
+		{
+			file_path = resources_path / file_path;
+		}
+	}
+
+	return file_path;
+}
+
+[[nodiscard]] std::filesystem::path GetBestSoundFile(const std::filesystem::path& file_path, bool try_alternate_extension = true)
+{
+	std::error_code ec;
+	std::filesystem::path return_path = file_path;
+	// Only need to worry about it if it doesn't exist (could also not be a file, but that's bad input)
+	if (!exists(return_path, ec))
+	{
+		// If there is no extension, assume mp3
+		if (!return_path.has_extension())
+		{
+			return_path.replace_extension("mp3");
+		}
+
+		std::filesystem::path tmp = SearchSoundPaths(return_path);
+		if (exists(tmp, ec))
+		{
+			return_path = tmp;
+		}
+		else
+		{
+			tmp = SearchSoundPaths(return_path.filename());
+
+			if (exists(tmp, ec))
+			{
+				return_path = tmp;
+			}
+			else if (try_alternate_extension)
+			{
+				tmp = return_path;
+				if (tmp.extension() == ".mp3")
+				{
+					tmp = GetBestSoundFile(tmp.replace_extension("wav"), false);
+				}
+				else
+				{
+					tmp = GetBestSoundFile(tmp.replace_extension("mp3"), false);
+				}
+
+				if (exists(tmp, ec))
+				{
+					return_path = tmp;
+				}
+			}
+		}
+	}
+
+	if (return_path != file_path)
+	{
+		WriteChatf("%s\atWARNING - Sound file could not be found. Replacing \ay%s\ax with \ay%s\ax", PluginMsg, file_path.c_str(), return_path.c_str());
+	}
+
+	return return_path;
+}
+
+void SetGMSoundFile(const char* friendly_name, std::filesystem::path* global_path)
+{
+	std::error_code ec;
+	std::filesystem::path tmp;
+	if (pLocalPC && PrivateProfileKeyExists(pLocalPC->Name, friendly_name, INIFileName))
+	{
+		tmp = GetBestSoundFile(GetPrivateProfileString(pLocalPC->Name, friendly_name, (*global_path).string(), INIFileName));
+		if (!exists(tmp, ec))
+		{
+			WriteChatf("%s\atWARNING - GM '%s' file not found for %s (Global Setting will be used instead): \am%s", PluginMsg, friendly_name, pLocalPC->Name, tmp.string().c_str());
+		}
+	}
+
+	if (tmp.empty() || !exists(tmp, ec))
+	{
+		tmp = GetBestSoundFile(GetPrivateProfileString("Settings", friendly_name, (*global_path).string(), INIFileName));
+	}
+
+	if (!exists(tmp, ec))
+	{
+		WriteChatf("%s\atWARNING - GM '%s' file not found: \am%s", PluginMsg, friendly_name, tmp.string().c_str());
+	}
+	else
+	{
+		*global_path = tmp;
+	}
+}
+
+void SetAllGMSoundFiles()
+{
+	SetGMSoundFile("EnterSound", &Sound_GMEnter);
+	SetGMSoundFile("LeaveSound", &Sound_GMLeave);
+	SetGMSoundFile("RemindSound", &Sound_GMRemind);
+}
+
 void ReadSettings()
 {
 	//Reminder Interval
@@ -335,48 +451,7 @@ void ReadSettings()
 	bGMPopup = GetPrivateProfileBool("Settings", "GMPopup", false, INIFileName);
 	bGMChatAlert = GetPrivateProfileBool("Settings", "GMChat", false, INIFileName);
 
-	{//DefaultEnter
-		char szDefaultEnter[MAX_STRING] = { 0 };
-
-		sprintf_s(szDefaultEnter, "%s\\Sounds\\gmenter.mp3", gPathResources);
-		GetPrivateProfileString("Settings", "EnterSound", szDefaultEnter, szEnterSound, MAX_STRING, INIFileName);
-		if (!_FileExists(szDefaultEnter))
-			sprintf_s(szDefaultEnter, "%s\\Sounds\\gmenter.wav", gPathResources);
-
-		if (!_FileExists(szDefaultEnter))
-			sprintf_s(szDefaultEnter, "%s\\Sounds\\gmenter.mp3", gPathResources);
-
-		if (!_FileExists(szEnterSound))
-			WriteChatf("%s\atWARNING - GM 'enter' sound file not found: \am%s", PluginMsg, szEnterSound);
-	}
-
-	{//DefaultLeave
-		char szDefaultLeave[MAX_STRING] = { 0 };
-
-		sprintf_s(szDefaultLeave, "%s\\Sounds\\gmleave.mp3", gPathResources);
-		GetPrivateProfileString("Settings", "LeaveSound", szDefaultLeave, szLeaveSound, MAX_STRING, INIFileName);
-		if (!_FileExists(szDefaultLeave))
-			sprintf_s(szDefaultLeave, "%s\\Sounds\\gmleave.wav", gPathResources);
-		if (!_FileExists(szDefaultLeave))
-			sprintf_s(szDefaultLeave, "%s\\Sounds\\gmleave.mp3", gPathResources);
-
-		if (!_FileExists(szLeaveSound))
-			WriteChatf("%s\atWARNING - GM 'leave' sound file not found: \am%s", PluginMsg, szLeaveSound);
-	}
-
-	{//DefaultRemind
-		char szDefaultRemind[MAX_STRING] = { 0 };
-		sprintf_s(szDefaultRemind, "%s\\Sounds\\gmremind.mp3", gPathResources);
-		GetPrivateProfileString("Settings", "RemindSound", szDefaultRemind, szRemindSound, MAX_STRING, INIFileName);
-		if (!_FileExists(szDefaultRemind))
-			sprintf_s(szDefaultRemind, "%s\\Sounds\\gmremind.wav", gPathResources);
-
-		if (!_FileExists(szDefaultRemind))
-			sprintf_s(szDefaultRemind, "%s\\Sounds\\gmremind.mp3", gPathResources);
-
-		if (!_FileExists(szRemindSound))
-			WriteChatf("%s\atWARNING - GM 'remind' sound file not found: \am%s", PluginMsg, szRemindSound);
-	}
+	SetAllGMSoundFiles();
 
 	GetPrivateProfileString("Settings", "GMEnterCmd", "", szGMEnterCmd, MAX_STRING, INIFileName);
 	GetPrivateProfileString("Settings", "GMEnterCmdIf", "", szGMEnterCmdIf, MAX_STRING, INIFileName);
@@ -395,9 +470,9 @@ void WriteSettings()
 	WritePrivateProfileBool("Settings", "GMChat", bGMChatAlert, INIFileName);
 	WritePrivateProfileBool("Settings", "GMCorpse", bGMCorpse, INIFileName);
 
-	WritePrivateProfileString("Settings", "EnterSound", szEnterSound, INIFileName);
-	WritePrivateProfileString("Settings", "LeaveSound", szLeaveSound, INIFileName);
-	WritePrivateProfileString("Settings", "RemindSound", szRemindSound, INIFileName);
+	WritePrivateProfileString("Settings", "EnterSound", Sound_GMEnter.string(), INIFileName);
+	WritePrivateProfileString("Settings", "LeaveSound", Sound_GMLeave.string(), INIFileName);
+	WritePrivateProfileString("Settings", "RemindSound", Sound_GMRemind.string(), INIFileName);
 }
 
 void SaveSettings()
@@ -425,65 +500,77 @@ void StopGMSound()
 	mciSendString("Close mySound", nullptr, 0, nullptr);
 }
 
-void PlayGMSound(char* pFileName)
+void PlayGMSound(const std::filesystem::path& sound_file)
 {
-	char lpszOpenCommand[MAX_STRING] = { 0 }, lpszPlayCommand[MAX_STRING] = { 0 }, szMsg[MAX_STRING] = { 0 },
-		drive[_MAX_DRIVE], dir[_MAX_DIR], fname[_MAX_FNAME], ext[_MAX_EXT];
-
 	StopGMSound();
-	if (!bVolSet)
+
+	std::error_code ec;
+	if (!exists(sound_file, ec))
 	{
-		if (waveOutGetVolume(nullptr, &dwVolume) == MMSYSERR_NOERROR)
+		WriteChatf("%s\atERROR - Sound file not found: \am%s", PluginMsg, sound_file.string().c_str());
+	}
+	else
+	{
+		if (!bVolSet)
 		{
-			bVolSet = true;
-			waveOutSetVolume(nullptr, NewVol);
-		}
-	}
-
-	_splitpath_s(pFileName, drive, dir, fname, ext);
-	bool bFound = false;
-
-	if (!_stricmp(ext, ".mp3"))
-	{
-		sprintf_s(lpszOpenCommand, "Open %s type MPEGVideo Alias mySound", pFileName);
-		sprintf_s(lpszPlayCommand, "play mySound from 0 to 9000 notify");
-		bFound = true;
-	}
-	else if (!_stricmp(ext, ".wav"))
-	{
-		sprintf_s(lpszOpenCommand, "Open %s type waveaudio Alias mySound", pFileName);
-		sprintf_s(lpszPlayCommand, "play mySound from 0 to 9000 notify");
-		bFound = true;
-	}
-
-	if (bFound)
-	{
-		int error = mciSendString(lpszOpenCommand, nullptr, 0, nullptr);
-		if (!error)
-		{
-			error = mciSendString("status mySound length", szMsg, MAX_STRING, nullptr);
-			if (!error)
+			if (waveOutGetVolume(nullptr, &dwVolume) == MMSYSERR_NOERROR)
 			{
-				const int i = std::clamp(0, 9000, GetIntFromString(szMsg, 0));
-
-				StopSoundTimer = MQGetTickCount64() + i;
-
-				if (i < 9000)
-					sprintf_s(lpszPlayCommand, "play mySound from 0 notify");
-
-				error = mciSendString(lpszPlayCommand, nullptr, 0, nullptr);
+				bVolSet = true;
+				waveOutSetVolume(nullptr, NewVol);
 			}
 		}
 
-		if (error)
-			bFound = false;
+		std::string sound_open;
+		if (sound_file.extension() == ".mp3")
+		{
+			sound_open = "MPEGVideo";
+		}
+		else if (sound_file.extension() == ".wav")
+		{
+			sound_open = "waveaudio";
+		}
+
+		if (sound_open.empty())
+		{
+			WriteChatf("%s\atERROR - Sound file not supported: \am%s", PluginMsg, sound_file.string().c_str());
+		}
+		else
+		{
+			sound_open = fmt::format("Open \"{}\" type {} Alias mySound", absolute(sound_file, ec).string(), sound_open);
+			int mci_error = mciSendString(sound_open.c_str(), nullptr, 0, nullptr);
+			if (mci_error == 0)
+			{
+				char szMsg[MAX_STRING] = { 0 };
+				mci_error = mciSendString("status mySound length", szMsg, MAX_STRING, nullptr);
+				if (mci_error == 0)
+				{
+					const int i = std::clamp(GetIntFromString(szMsg, 0), 0, 9000);
+
+					StopSoundTimer = MQGetTickCount64() + i;
+
+					const std::string play_command = fmt::format("play mySound from 0 {}notify", i < 9000 ? "" : "to 9000 ");
+
+					mci_error = mciSendString(play_command.c_str(), nullptr, 0, nullptr);
+
+					if (mci_error == 0)
+						return;
+
+					WriteChatf("%s\atERROR - Something went wrong playing: \am%s\ax", PluginMsg, sound_file.string().c_str());
+				}
+				else
+				{
+					WriteChatf("%s\atERROR - Something went wrong checking length of: \am%s\ax", PluginMsg, sound_file.string().c_str());
+				}
+			}
+			else
+			{
+				WriteChatf("%s\atERROR - Something went wrong opening: \am%s", PluginMsg, sound_file.string().c_str());
+			}
+		}
 	}
 
-	if (!bFound)
-	{
-		PlayErrorSound();
-		StopSoundTimer = MQGetTickCount64() + 1000;
-	}
+	PlayErrorSound();
+	StopSoundTimer = MQGetTickCount64() + 1000;
 }
 
 void ToggleBool(const char* szLine, bool* theOption, const char* msg)
@@ -626,11 +713,7 @@ void GMTest(char* szLine)
 
 		if (!bGMQuiet && bGMSound)
 		{
-			GetPrivateProfileString(GetCharInfo()->Name, "EnterSound", "", szTmp, MAX_STRING, INIFileName);
-			if (szTmp[0] && _FileExists(szTmp))
-				PlayGMSound(szTmp);
-			else
-				PlayGMSound(szEnterSound);
+			PlayGMSound(Sound_GMEnter);
 		}
 
 		if (!bGMQuiet && bGMBeep)
@@ -648,8 +731,8 @@ void GMTest(char* szLine)
 	}
 	else if (!strncmp(szArg, "leave", 5))
 	{
-		sprintf_s(szMsg, "(TEST) \agGM %s \ayhas left the zone at \ag%s", GetCharInfo()->Name, DisplayTime());
-		sprintf_s(szPopup, "(TEST) GM %s has left the zone at %s", GetCharInfo()->Name, DisplayTime());
+		sprintf_s(szMsg, "(TEST) \agGM %s \ayhas left the zone (or gone GM Invis) at \ag%s", GetCharInfo()->Name, DisplayTime());
+		sprintf_s(szPopup, "(TEST) GM %s has left the zone (or gone GM Invis) at %s", GetCharInfo()->Name, DisplayTime());
 		WriteChatf("%s%s", PluginMsg, szMsg);
 		strcpy_s(szTmp, szGMLeaveCmdIf);
 		int lResult = MCEval(szTmp);
@@ -661,11 +744,7 @@ void GMTest(char* szLine)
 
 		if (!bGMQuiet && bGMSound)
 		{
-			GetPrivateProfileString(GetCharInfo()->Name, "LeaveSound", "", szTmp, MAX_STRING, INIFileName);
-			if (szTmp[0] && _FileExists(szTmp))
-				PlayGMSound(szTmp);
-			else
-				PlayGMSound(szLeaveSound);
+			PlayGMSound(Sound_GMLeave);
 		}
 
 		if (!bGMQuiet && bGMBeep)
@@ -684,7 +763,7 @@ void GMTest(char* szLine)
 		sprintf_s(szMsg, "(TEST) \arGM ALERT!!  \ayGM in zone.  \at(\ag%s\at)", GetCharInfo()->Name);
 		WriteChatf("%s%s", PluginMsg, szMsg);
 		if (bGMSound)
-			PlayGMSound(szRemindSound);
+			PlayGMSound(Sound_GMRemind);
 	}
 	else
 	{
@@ -694,40 +773,46 @@ void GMTest(char* szLine)
 
 void GMSS(char* szLine)
 {
-	char szArg[MAX_STRING], szFile[MAX_STRING] = { 0 };
-	bool bOK = false;
+	char szArg[MAX_STRING] = { 0 };
+	char szFile[MAX_STRING] = { 0 };
+
 	GetArg(szArg, szLine, 1);
 	GetArg(szFile, szLine, 2);
-	if (szFile[0] && _FileExists(szFile))
-		bOK = true;
 
-	if (!bOK)
+	if (szFile[0])
 	{
-		WriteChatf("%s\arSound file not found, setting not changed, tried: \am%s", PluginMsg, szFile[0] ? szFile : "(No filename supplied)");
-		return;
-	}
-
-	if (!strncmp(szArg, "enter", 5))
-	{
-		strcpy_s(szEnterSound, szFile);
-		WriteChatf("%s\at'enter' sound set to: \am%s", PluginMsg, szEnterSound);
-		WriteChatf("%s\agDon't forget to use '/gmcheck save' if you want this to be persistant!", PluginMsg);
-	}
-	else if (!strncmp(szArg, "leave", 5))
-	{
-		strcpy_s(szLeaveSound, szFile);
-		WriteChatf("%s\at'leave' sound set to: \am%s", PluginMsg, szLeaveSound);
-		WriteChatf("%s\agDon't forget to use '/gmcheck save' if you want this to be persistant!", PluginMsg);
-	}
-	else if (!strncmp(szArg, "remind", 5))
-	{
-		strcpy_s(szRemindSound, szFile);
-		WriteChatf("%s\at'remind' sound set to: \am%s", PluginMsg, szRemindSound);
-		WriteChatf("%s\agDon't forget to use '/gmcheck save' if you want this to be persistant!", PluginMsg);
+		WriteChatf("%s\arFilename required.  Usage: \at/gmcheck ss {enter|leave|remind} SoundFileName", PluginMsg);
 	}
 	else
 	{
-		WriteChatf("%s\arBad option, usage: \at/gmcheck ss {enter|leave|remind} SoundFileName", PluginMsg);
+		std::error_code ec;
+		std::filesystem::path tmp = GetBestSoundFile(szFile);
+		if (!exists(tmp, ec))
+		{
+			WriteChatf("%s\arSound file not found (%s).  No settings changed", PluginMsg, szFile);
+		}
+		else
+		{
+			if (ci_equals(szArg, "enter"))
+			{
+				Sound_GMEnter = tmp;
+			}
+			else if (ci_equals(szArg, "leave"))
+			{
+				Sound_GMLeave = tmp;
+			}
+			else if (ci_equals(szArg, "remind"))
+			{
+				Sound_GMRemind = tmp;
+			}
+			else
+			{
+				WriteChatf("%s\arBad option (%s), usage: \at/gmcheck ss {enter|leave|remind} SoundFileName", PluginMsg, szArg);
+				return;
+			}
+
+			WriteChatf("%s\agDon't forget to use '/gmcheck save' if you want this to be persistent!", PluginMsg);
+		}
 	}
 }
 
@@ -750,7 +835,7 @@ void UpdateAlerts()
 		if (bGMChatAlert)
 		{
 			char szMsg[MAX_STRING] = { 0 };
-			sprintf_s(szMsg, "\agGM %s \ayhas left the zone at \ag%s", GMName.c_str(), DisplayTime());
+			sprintf_s(szMsg, "\agGM %s \ayhas left the zone (or gone GM Invis) at \ag%s", GMName.c_str(), DisplayTime());
 			WriteChatf("%s%s", PluginMsg, szMsg);
 		}
 
@@ -767,12 +852,7 @@ void UpdateAlerts()
 
 		if (!bGMQuiet && bGMSound)
 		{
-			char szTmp[MAX_STRING] = { 0 };
-			GetPrivateProfileString(GMName.c_str(), "LeaveSound", "", szTmp, MAX_STRING, INIFileName);
-			if (szTmp[0] && _FileExists(szTmp))
-				PlayGMSound(szTmp);
-			else
-				PlayGMSound(szLeaveSound);
+			PlayGMSound(Sound_GMLeave);
 		}
 
 		if (!bGMQuiet && bGMBeep)
@@ -783,7 +863,7 @@ void UpdateAlerts()
 		if (bGMPopup)
 		{
 			char szPopup[MAX_STRING];
-			sprintf_s(szPopup, "GM %s has left the zone at %s", GMName.c_str(), DisplayTime());
+			sprintf_s(szPopup, "GM %s has left the zone (or gone GM Invis) at %s", GMName.c_str(), DisplayTime());
 			DisplayOverlayText(szPopup, CONCOLOR_GREEN, 100, 500, 500, 3000);
 		}
 
@@ -929,7 +1009,8 @@ void GMHelp()
 
 void GMCheckCmd(PlayerClient* pChar, char* szLine)
 {
-	char szArg1[MAX_STRING], szArg2[MAX_STRING];
+	char szArg1[MAX_STRING];
+	char szArg2[MAX_STRING];
 	GetArg(szArg1, szLine, 1);
 	if (!_stricmp(szArg1, "on"))
 	{
@@ -1044,7 +1125,7 @@ void SetupVolumesFromINI()
 }
 
 
-PLUGIN_API VOID InitializePlugin()
+PLUGIN_API void InitializePlugin()
 {
 	DebugSpewAlways("Initializing MQ2GMCheck");
 	SetupVolumesFromINI();
@@ -1064,7 +1145,7 @@ PLUGIN_API VOID InitializePlugin()
 	AddCommand("/gmcheck", GMCheckCmd);
 }
 
-PLUGIN_API VOID ShutdownPlugin()
+PLUGIN_API void ShutdownPlugin()
 {
 	WriteChatf("%s\amUnloading plugin.", PluginMsg);
 	DebugSpewAlways("Shutting down MQ2GMCheck");
@@ -1077,7 +1158,7 @@ PLUGIN_API VOID ShutdownPlugin()
 		waveOutSetVolume(nullptr, dwVolume);
 }
 
-PLUGIN_API VOID OnPulse()
+PLUGIN_API void OnPulse()
 {
 	MQScopedBenchmark bm(bmMQ2GMCheck);
 
@@ -1120,15 +1201,15 @@ PLUGIN_API VOID OnPulse()
 					WriteChatf("%s%s", PluginMsg, szTmp);
 
 				if (bGMSound)
-					PlayGMSound(szRemindSound);
+					PlayGMSound(Sound_GMRemind);
 			}
 		}
 	}
 }
 
-PLUGIN_API VOID OnAddSpawn(PlayerClient* pSpawn)
+PLUGIN_API void OnAddSpawn(PlayerClient* pSpawn)
 {
-	if (pLocalPC && bGMCheck && pSpawn && pSpawn->GM && (bGMCorpse || pSpawn->Type == SPAWN_CORPSE))
+	if (pLocalPC && bGMCheck && pSpawn && pSpawn->GM && (bGMCorpse || pSpawn->Type != SPAWN_CORPSE))
 	{
 		if (!strlen(pSpawn->DisplayedName))
 			return;
@@ -1168,12 +1249,7 @@ PLUGIN_API VOID OnAddSpawn(PlayerClient* pSpawn)
 
 		if (!bGMQuiet && bGMSound)
 		{
-			char szTmp[MAX_STRING] = { 0 };
-			GetPrivateProfileString(pSpawn->DisplayedName, "EnterSound", "", szTmp, MAX_STRING, INIFileName);
-			if (szTmp[0] && _FileExists(szTmp))
-				PlayGMSound(szTmp);
-			else
-				PlayGMSound(szEnterSound);
+			PlayGMSound(Sound_GMEnter);
 		}
 
 		if (!bGMQuiet && bGMBeep)
@@ -1186,7 +1262,7 @@ PLUGIN_API VOID OnAddSpawn(PlayerClient* pSpawn)
 	}
 }
 
-PLUGIN_API VOID OnRemoveSpawn(PlayerClient* pSpawn)
+PLUGIN_API void OnRemoveSpawn(PlayerClient* pSpawn)
 {
 	if (bGMCheck && pSpawn && pSpawn->GM)
 	{
@@ -1207,7 +1283,7 @@ PLUGIN_API VOID OnRemoveSpawn(PlayerClient* pSpawn)
 		if (bGMChatAlert)
 		{
 			char szMsg[MAX_STRING] = { 0 };
-			sprintf_s(szMsg, "\agGM %s \ayhas left the zone at \ag%s", pSpawn->DisplayedName, DisplayTime());
+			sprintf_s(szMsg, "\agGM %s \ayhas left the zone (or gone GM Invis) at \ag%s", pSpawn->DisplayedName, DisplayTime());
 			WriteChatf("%s%s", PluginMsg, szMsg);
 		}
 
@@ -1224,12 +1300,7 @@ PLUGIN_API VOID OnRemoveSpawn(PlayerClient* pSpawn)
 
 		if (!bGMQuiet && bGMSound)
 		{
-			char szTmp[MAX_STRING] = { 0 };
-			GetPrivateProfileString(pSpawn->DisplayedName, "LeaveSound", "", szTmp, MAX_STRING, INIFileName);
-			if (szTmp[0] && _FileExists(szTmp))
-				PlayGMSound(szTmp);
-			else
-				PlayGMSound(szLeaveSound);
+			PlayGMSound(Sound_GMLeave);
 		}
 
 		if (!bGMQuiet && bGMBeep)
@@ -1240,18 +1311,27 @@ PLUGIN_API VOID OnRemoveSpawn(PlayerClient* pSpawn)
 		if (bGMPopup)
 		{
 			char szPopup[MAX_STRING] = { 0 };
-			sprintf_s(szPopup, "GM %s has left the zone at %s", pSpawn->DisplayedName, DisplayTime());
+			sprintf_s(szPopup, "GM %s has left the zone (or gone GM Invis) at %s", pSpawn->DisplayedName, DisplayTime());
 			DisplayOverlayText(szPopup, CONCOLOR_GREEN, 100, 500, 500, 3000);
 		}
 	}
 }
 
-PLUGIN_API VOID OnEndZone()
+PLUGIN_API void OnEndZone()
 {
 	GMNames.clear();
 }
 
-PLUGIN_API VOID OnZoned()
+PLUGIN_API void OnZoned()
 {
 	bGMQuiet = false;
+}
+
+PLUGIN_API void SetGameState(int GameState)
+{
+	// In case the character name has changed
+	if (GameState == GAMESTATE_INGAME)
+	{
+		SetAllGMSoundFiles();
+	}
 }
