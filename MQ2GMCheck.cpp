@@ -20,7 +20,7 @@
 #include <mmsystem.h>
 
 PreSetup("MQ2GMCheck");
-PLUGIN_VERSION(5.10);
+PLUGIN_VERSION(5.20);
 
 constexpr const char* PluginMsg = "\ay[\aoMQ2GMCheck\ax] ";
 
@@ -40,18 +40,57 @@ bool bVolSet = false;
 
 std::vector<std::string> GMNames;
 
+enum FlagOptions { Off, On, Toggle };
+
+class BooleanOption
+{
+private:
+	std::string KeyName;
+	std::string ChatMessage;
+	bool bFlag;
+public:
+	BooleanOption() {};
+	BooleanOption(bool Default, std::string Key, std::string Message)
+	{
+		KeyName = Key;
+		ChatMessage = Message;
+		bFlag = Default;
+		if (KeyName.length())
+			bFlag = GetPrivateProfileBool("Settings", KeyName.c_str(), Default, INIFileName);
+	};
+	bool Read()
+	{
+		if (KeyName.length())
+			bFlag = GetPrivateProfileBool("Settings", KeyName.c_str(), bFlag, INIFileName);
+		return(bFlag);
+	};
+	void Write(enum FlagOptions fopt, bool silent = false)
+	{
+		if (fopt == FlagOptions::Toggle)
+			bFlag = !bFlag;
+		else if (fopt == FlagOptions::On)
+			bFlag = true;
+		else
+			bFlag = false;
+		if (KeyName.length())
+			WritePrivateProfileBool("Settings", KeyName.c_str(), bFlag, INIFileName);
+		if (!silent)
+			WriteChatf("%s\am%s %s\am.", PluginMsg, ChatMessage.c_str(), bFlag ? "\agENABLED" : "\arDISABLED");
+	};
+};
+
 //----------------------------------------------------------------------------
 // this class holds persisted settings for this plugin.
 class Settings
 {
 public:
-	static constexpr inline bool default_GMCheckEnabled = true;
-	static constexpr inline bool default_GMQuietEnabled = false;
-	static constexpr inline bool default_GMSoundEnabled = true;
-	static constexpr inline bool default_GMBeepEnabled = false;
-	static constexpr inline bool default_GMPopupEnabled = false;
-	static constexpr inline bool default_GMCorpseEnabled = false;
-	static constexpr inline bool default_GMChatAlertEnabled = false;
+	static constexpr inline FlagOptions default_GMCheckEnabled = FlagOptions::On;
+	static constexpr inline FlagOptions default_GMQuietEnabled = FlagOptions::Off;
+	static constexpr inline FlagOptions default_GMSoundEnabled = FlagOptions::On;
+	static constexpr inline FlagOptions default_GMBeepEnabled = FlagOptions::Off;
+	static constexpr inline FlagOptions default_GMPopupEnabled = FlagOptions::Off;
+	static constexpr inline FlagOptions default_GMCorpseEnabled = FlagOptions::Off;
+	static constexpr inline FlagOptions default_GMChatAlertEnabled = FlagOptions::On;
 	static constexpr inline int default_ReminderInterval = 30;
 
 	std::string szGMEnterCmd = std::string();
@@ -62,26 +101,13 @@ public:
 	std::filesystem::path Sound_GMLeave = std::filesystem::path(gPathResources) / "Sounds/gmleave.mp3";
 	std::filesystem::path Sound_GMRemind = std::filesystem::path(gPathResources) / "Sounds/gmremind.mp3";
 
-	inline bool IsGMCheckEnabled() const { return m_GMCheckEnabled; }
-	void SetGMCheckEnabled(bool toggle = true, bool enabled = false, bool quiet = true);
-
-	inline bool IsGMQuietEnabled() const { return m_GMQuietEnabled; }
-	void SetGMQuietEnabled(bool toggle = true, bool enabled = false, bool quiet = true);
-
-	inline bool IsGMSoundEnabled() const { return m_GMSoundEnabled; }
-	void SetGMSoundEnabled(bool toggle = true, bool enabled = false, bool quiet = true);
-
-	inline bool IsGMBeepEnabled() const { return m_GMBeepEnabled; }
-	void SetGMBeepEnabled(bool toggle = true, bool enabled = false, bool quiet = true);
-
-	inline bool IsGMPopupEnabled() const { return m_GMPopupEnabled; }
-	void SetGMPopupEnabled(bool toggle = true, bool enabled = false, bool quiet = true);
-
-	inline bool IsGMCorpseEnabled() const { return m_GMCorpseEnabled; }
-	void SetGMCorpseEnabled(bool toggle = true, bool enabled = false, bool quiet = true);
-
-	inline bool IsGMChatAlertEnabled() const { return m_GMChatAlertEnabled; }
-	void SetGMChatAlertEnabled(bool toggle = true, bool enabled = false, bool quiet = true);
+	BooleanOption m_GMCheckEnabled;
+	BooleanOption m_GMSoundEnabled;
+	BooleanOption m_GMBeepEnabled;
+	BooleanOption m_GMPopupEnabled;
+	BooleanOption m_GMCorpseEnabled;
+	BooleanOption m_GMChatAlertEnabled;
+	BooleanOption m_GMQuietEnabled;
 
 	inline int GetReminderInterval() const { return m_ReminderInterval; }
 	void SetReminderInterval(int reminderinterval);
@@ -93,27 +119,31 @@ public:
 	void SetGMSoundFile(const char* friendly_name, std::filesystem::path* global_path);
 	void SetAllGMSoundFiles();
 
+	Settings()
+	{
+		m_GMCheckEnabled = BooleanOption(default_GMCheckEnabled, "GMCheck", "GM checking is now");
+		m_GMSoundEnabled = BooleanOption(default_GMSoundEnabled, "GMSound", "Sound playing on GM detection is now");
+		m_GMBeepEnabled = BooleanOption(default_GMBeepEnabled, "GMBeep", "Beeping on GM detection is now");
+		m_GMPopupEnabled = BooleanOption(default_GMPopupEnabled, "GMPopup", "Showing popup message on GM detection is now");
+		m_GMCorpseEnabled = BooleanOption(default_GMCorpseEnabled, "GMCorpse", "Alerting for GM corpses is now");
+		m_GMChatAlertEnabled = BooleanOption(default_GMChatAlertEnabled, "GMChat", "Displaying GM detection alerts in MQ chat window is now");
+		m_GMQuietEnabled = BooleanOption(FlagOptions::Off, "", "GM alert and reminder quiet mode is now");
+	};
+
 private:
-	bool m_GMCheckEnabled = default_GMCheckEnabled;
-	bool m_GMQuietEnabled = default_GMQuietEnabled;
-	bool m_GMSoundEnabled = default_GMSoundEnabled;
-	bool m_GMBeepEnabled = default_GMBeepEnabled;
-	bool m_GMPopupEnabled = default_GMPopupEnabled;
-	bool m_GMCorpseEnabled = default_GMCorpseEnabled;
-	bool m_GMChatAlertEnabled = default_GMChatAlertEnabled;
 	int m_ReminderInterval = default_ReminderInterval;
 };
 Settings s_settings;
 
 void Settings::Load()
 {
-	m_GMQuietEnabled = false;
-	m_GMCheckEnabled = GetPrivateProfileBool("Settings", "GMCheck", default_GMCheckEnabled, INIFileName);
-	m_GMSoundEnabled = GetPrivateProfileBool("Settings", "GMSound", default_GMSoundEnabled, INIFileName);
-	m_GMBeepEnabled = GetPrivateProfileBool("Settings", "GMBeep", default_GMBeepEnabled, INIFileName);
-	m_GMPopupEnabled = GetPrivateProfileBool("Settings", "GMPopup", default_GMPopupEnabled, INIFileName);
-	m_GMCorpseEnabled = GetPrivateProfileBool("Settings", "GMCorpse", default_GMCorpseEnabled, INIFileName);
-	m_GMChatAlertEnabled = GetPrivateProfileBool("Settings", "GMChat", default_GMChatAlertEnabled, INIFileName);
+	m_GMCheckEnabled.Read();
+	m_GMSoundEnabled.Read();
+	m_GMBeepEnabled.Read();
+	m_GMPopupEnabled.Read();
+	m_GMCorpseEnabled.Read();
+	m_GMChatAlertEnabled.Read();
+	m_GMQuietEnabled.Write(FlagOptions::Off, true);
 	m_ReminderInterval = GetPrivateProfileInt("Settings", "RemInt", default_ReminderInterval, INIFileName);
 	if (m_ReminderInterval < 10 && m_ReminderInterval)
 		m_ReminderInterval = 10;
@@ -126,121 +156,21 @@ void Settings::Load()
 
 void Settings::Reset()
 {
-	SetGMCheckEnabled(default_GMCheckEnabled);
-	SetGMSoundEnabled(default_GMSoundEnabled);
-	SetGMBeepEnabled(default_GMBeepEnabled);
-	SetGMPopupEnabled(default_GMPopupEnabled);
-	SetGMCorpseEnabled(default_GMCorpseEnabled);
-	SetGMChatAlertEnabled(default_GMChatAlertEnabled);
-	m_GMQuietEnabled = default_GMQuietEnabled;
+	m_GMCheckEnabled.Write(default_GMCheckEnabled);
+	m_GMSoundEnabled.Write(default_GMSoundEnabled);
+	m_GMBeepEnabled.Write(default_GMBeepEnabled);
+	m_GMPopupEnabled.Write(default_GMPopupEnabled);
+	m_GMCorpseEnabled.Write(default_GMCorpseEnabled);
+	m_GMChatAlertEnabled.Write(default_GMChatAlertEnabled);
+	m_GMQuietEnabled.Write(default_GMQuietEnabled);
 	szGMEnterCmd = "";
 	szGMEnterCmdIf = "";
 	szGMLeaveCmd = "";
 	szGMLeaveCmdIf = "";
 	m_ReminderInterval = default_ReminderInterval;
-	std::filesystem::path Sound_GMEnter = std::filesystem::path(gPathResources) / "Sounds/gmenter.mp3";
-	std::filesystem::path Sound_GMLeave = std::filesystem::path(gPathResources) / "Sounds/gmleave.mp3";
-	std::filesystem::path Sound_GMRemind = std::filesystem::path(gPathResources) / "Sounds/gmremind.mp3";
-}
-
-void Settings::SetGMCheckEnabled(bool toggle, bool enabled, bool quiet)
-{
-	if (toggle)
-		m_GMCheckEnabled = !m_GMCheckEnabled;
-	else
-	{
-		if (enabled == m_GMCheckEnabled)
-			return;
-		m_GMCheckEnabled = enabled;
-	}
-	WritePrivateProfileBool("Settings", "GMCheck", m_GMCheckEnabled, INIFileName);
-	if (!quiet)
-		WriteChatf("%s\amGM checking is now %s\am.", PluginMsg, m_GMCheckEnabled ? "\agENABLED" : "\arDISABLED");
-}
-
-void Settings::SetGMQuietEnabled(bool toggle, bool enabled, bool quiet)
-{
-	if (toggle)
-		m_GMQuietEnabled = !m_GMQuietEnabled;
-	else
-		m_GMQuietEnabled = enabled;
-	if (!quiet)
-		WriteChatf("%s\amGM alert and reminder sounds %s\am.", PluginMsg, m_GMQuietEnabled ? "temporarily \arDISABLED" : "\agENABLED");
-}
-
-void Settings::SetGMSoundEnabled(bool toggle, bool enabled, bool quiet)
-{
-	if (toggle)
-		m_GMSoundEnabled = !m_GMSoundEnabled;
-	else
-	{
-		if (enabled == m_GMSoundEnabled)
-			return;
-		m_GMSoundEnabled = enabled;
-	}
-	WritePrivateProfileBool("Settings", "GMSound", m_GMSoundEnabled, INIFileName);
-	if (!quiet)
-		WriteChatf("%s\amSound playing on GM detection is now %s\am.", PluginMsg, m_GMSoundEnabled ? "\agENABLED" : "\arDISABLED");
-}
-
-void Settings::SetGMBeepEnabled(bool toggle, bool enabled, bool quiet)
-{
-	if (toggle)
-		m_GMBeepEnabled = !m_GMBeepEnabled;
-	else
-	{
-		if (enabled == m_GMBeepEnabled)
-			return;
-		m_GMBeepEnabled = enabled;
-	}
-	WritePrivateProfileBool("Settings", "GMBeep", m_GMBeepEnabled, INIFileName);
-	if (!quiet)
-		WriteChatf("%s\amBeeping on GM detection is now %s\am.", PluginMsg, m_GMBeepEnabled ? "\agENABLED" : "\arDISABLED");
-}
-
-void Settings::SetGMPopupEnabled(bool toggle, bool enabled, bool quiet)
-{
-	if (toggle)
-		m_GMPopupEnabled = !m_GMPopupEnabled;
-	else
-	{
-		if (enabled == m_GMPopupEnabled)
-			return;
-		m_GMPopupEnabled = enabled;
-	}
-	WritePrivateProfileBool("Settings", "GMPopup", m_GMPopupEnabled, INIFileName);
-	if (!quiet)
-		WriteChatf("%s\amShowing popup message on GM detection is now %s\am.", PluginMsg, m_GMPopupEnabled ? "\agENABLED" : "\arDISABLED");
-}
-
-void Settings::SetGMCorpseEnabled(bool toggle, bool enabled, bool quiet)
-{
-	if (toggle)
-		m_GMCorpseEnabled = !m_GMCorpseEnabled;
-	else
-	{
-		if (enabled == m_GMCorpseEnabled)
-			return;
-		m_GMCorpseEnabled = enabled;
-	}
-	WritePrivateProfileBool("Settings", "GMCorpse", m_GMCorpseEnabled, INIFileName);
-	if (!quiet)
-		WriteChatf("%s\amCorpse exclusion from GM alerts is now %s\am.", PluginMsg, !m_GMCorpseEnabled ? "\agENABLED" : "\arDISABLED");
-}
-
-void Settings::SetGMChatAlertEnabled(bool toggle, bool enabled, bool quiet)
-{
-	if (toggle)
-		m_GMChatAlertEnabled = !m_GMChatAlertEnabled;
-	else
-	{
-		if (enabled == m_GMChatAlertEnabled)
-			return;
-		m_GMChatAlertEnabled = enabled;
-	}
-	WritePrivateProfileBool("Settings", "GMChat", m_GMChatAlertEnabled, INIFileName);
-	if (!quiet)
-		WriteChatf("%s\amDisplaying GM detection alerts in MQ chat window is now %s\am.", PluginMsg, m_GMChatAlertEnabled ? "\agENABLED" : "\arDISABLED");
+	Sound_GMEnter = std::filesystem::path(gPathResources) / "Sounds/gmenter.mp3";
+	Sound_GMLeave = std::filesystem::path(gPathResources) / "Sounds/gmleave.mp3";
+	Sound_GMRemind = std::filesystem::path(gPathResources) / "Sounds/gmremind.mp3";
 }
 
 void Settings::SetReminderInterval(int ReminderInterval)
@@ -445,7 +375,7 @@ public:
 		switch ((GMCheckMembers)pMember->ID)
 		{
 		case GMCheckMembers::Status:
-			Dest.DWord = s_settings.IsGMCheckEnabled();
+			Dest.DWord = s_settings.m_GMCheckEnabled.Read();
 			Dest.Type = pBoolType;
 			return true;
 
@@ -468,27 +398,27 @@ public:
 		}
 
 		case GMCheckMembers::Sound:
-			Dest.DWord = s_settings.IsGMSoundEnabled();
+			Dest.DWord = s_settings.m_GMSoundEnabled.Read();
 			Dest.Type = pBoolType;
 			return true;
 
 		case GMCheckMembers::Beep:
-			Dest.DWord = s_settings.IsGMBeepEnabled();
+			Dest.DWord = s_settings.m_GMBeepEnabled.Read();
 			Dest.Type = pBoolType;
 			return true;
 
 		case GMCheckMembers::Popup:
-			Dest.DWord = s_settings.IsGMPopupEnabled();
+			Dest.DWord = s_settings.m_GMPopupEnabled.Read();
 			Dest.Type = pBoolType;
 			return true;
 
 		case GMCheckMembers::Corpse:
-			Dest.DWord = s_settings.IsGMCorpseEnabled();
+			Dest.DWord = s_settings.m_GMCorpseEnabled.Read();
 			Dest.Type = pBoolType;
 			return true;
 
 		case GMCheckMembers::Quiet:
-			Dest.DWord = s_settings.IsGMQuietEnabled();
+			Dest.DWord = s_settings.m_GMQuietEnabled.Read();
 			Dest.Type = pBoolType;
 			return true;
 
@@ -601,12 +531,12 @@ void GMCheckStatus(bool MentionHelp = false)
 
 	WriteChatf("%s\ar- \atGM Check is: %s \at(Chat: %s \at- Sound: %s \at- Beep: %s \at- Popup: %s \at- Corpses: %s\at) - Reminder Interval: %s",
 		PluginMsg,
-		s_settings.IsGMCheckEnabled() ? "\agON" : "\arOFF",
-		s_settings.IsGMChatAlertEnabled() ? "\agON" : "\arOFF",
-		s_settings.IsGMSoundEnabled() ? "\agON" : "\arOFF",
-		s_settings.IsGMBeepEnabled() ? "\agON" : "\arOFF",
-		s_settings.IsGMPopupEnabled() ? "\agON" : "\arOFF",
-		s_settings.IsGMCorpseEnabled() ? "\agIGNORED" : "\arINCLUDED",
+		s_settings.m_GMCheckEnabled.Read() ? "\agON" : "\arOFF",
+		s_settings.m_GMChatAlertEnabled.Read() ? "\agON" : "\arOFF",
+		s_settings.m_GMSoundEnabled.Read() ? "\agON" : "\arOFF",
+		s_settings.m_GMBeepEnabled.Read() ? "\agON" : "\arOFF",
+		s_settings.m_GMPopupEnabled.Read() ? "\agON" : "\arOFF",
+		s_settings.m_GMCorpseEnabled.Read() ? "\agIGNORED" : "\arINCLUDED",
 		szTemp);
 
 	if (MentionHelp)
@@ -736,11 +666,11 @@ void GMQuiet(char* szLine)
 	GetArg(szArg, szLine, 1);
 
 	if (!szArg[0])
-		s_settings.SetGMQuietEnabled(true, false, false);
+		s_settings.m_GMQuietEnabled.Write(FlagOptions::Toggle);
 	else if (!_strnicmp(szArg, "on", 2))
-		s_settings.SetGMQuietEnabled(false, true, false);
+		s_settings.m_GMQuietEnabled.Write(FlagOptions::On);
 	else if (!_strnicmp(szArg, "off", 3))
-		s_settings.SetGMQuietEnabled(false, false, false);
+		s_settings.m_GMQuietEnabled.Write(FlagOptions::Off);
 }
 
 void TrackGMs(const char* GMName)
@@ -802,7 +732,7 @@ void DoGMAlert(const char* gm_name, GMStatuses status, bool test = false)
 		break;
 	}
 
-	if (s_settings.IsGMChatAlertEnabled())
+	if (s_settings.m_GMChatAlertEnabled.Read())
 		WriteChatf("%s%s", PluginMsg, szMsg);
 
 	if (test || (status == GMStatuses::Enter && !bGMCmdActive) || (status == GMStatuses::Leave && bGMCmdActive && GMNames.empty()))
@@ -827,17 +757,17 @@ void DoGMAlert(const char* gm_name, GMStatuses status, bool test = false)
 		}
 	}
 
-	if (!s_settings.IsGMQuietEnabled() && s_settings.IsGMSoundEnabled())
+	if (!s_settings.m_GMQuietEnabled.Read() && s_settings.m_GMSoundEnabled.Read())
 	{
 		PlayGMSound(sound_to_play);
 	}
 
-	if (!s_settings.IsGMQuietEnabled() && s_settings.IsGMBeepEnabled())
+	if (!s_settings.m_GMQuietEnabled.Read() && s_settings.m_GMBeepEnabled.Read())
 	{
 		PlayErrorSound(beep_sound.c_str());
 	}
 
-	if (s_settings.IsGMPopupEnabled())
+	if (s_settings.m_GMPopupEnabled.Read())
 	{
 		StripMQChat(szMsg, szMsg);
 		DisplayOverlayText(szMsg, overlay_color, 100, 500, 500, 3000);
@@ -1050,41 +980,41 @@ void GMCheckCmd(PlayerClient* pChar, char* szLine)
 	GetArg(szArg1, szLine, 1);
 	if (!_stricmp(szArg1, "on"))
 	{
-		s_settings.SetGMCheckEnabled(false, true, false);
+		s_settings.m_GMCheckEnabled.Write(FlagOptions::On);
 	}
 	else if (!_stricmp(szArg1, "off"))
 	{
-		s_settings.SetGMCheckEnabled(false, false, false);
+		s_settings.m_GMCheckEnabled.Write(FlagOptions::Off);
 	}
 	else if (!_stricmp(szArg1, "quiet"))
 	{
 		strcpy_s(szArg2, GetNextArg(szLine));
-		s_settings.SetGMQuietEnabled(szArg2[0] ? false : true, !_stricmp(szArg2, "on") ? true : false, false);
+		s_settings.m_GMQuietEnabled.Write(!_stricmp(szArg2, "on") ? FlagOptions::On : !_stricmp(szArg2, "off") ? FlagOptions::Off : FlagOptions::Toggle);
 	}
 	else if (!_stricmp(szArg1, "sound"))
 	{
 		strcpy_s(szArg2, GetNextArg(szLine));
-		s_settings.SetGMSoundEnabled(szArg2[0] ? false : true, !_stricmp(szArg2, "on") ? true : false, false);
+		s_settings.m_GMSoundEnabled.Write(!_stricmp(szArg2, "on") ? FlagOptions::On : !_stricmp(szArg2, "off") ? FlagOptions::Off : FlagOptions::Toggle);
 	}
 	else if (!_stricmp(szArg1, "beep"))
 	{
 		strcpy_s(szArg2, GetNextArg(szLine));
-		s_settings.SetGMBeepEnabled(szArg2[0] ? false : true, !_stricmp(szArg2, "on") ? true : false, false);
+		s_settings.m_GMBeepEnabled.Write(!_stricmp(szArg2, "on") ? FlagOptions::On : !_stricmp(szArg2, "off") ? FlagOptions::Off : FlagOptions::Toggle);
 	}
 	else if (!_stricmp(szArg1, "corpse"))
 	{
 		strcpy_s(szArg2, GetNextArg(szLine));
-		s_settings.SetGMCorpseEnabled(szArg2[0] ? false : true, !_stricmp(szArg2, "on") ? true : false, false);
+		s_settings.m_GMCorpseEnabled.Write(!_stricmp(szArg2, "on") ? FlagOptions::On : !_stricmp(szArg2, "off") ? FlagOptions::Off : FlagOptions::Toggle);
 	}
 	else if (!_stricmp(szArg1, "popup"))
 	{
 		strcpy_s(szArg2, GetNextArg(szLine));
-		s_settings.SetGMPopupEnabled(szArg2[0] ? false : true, !_stricmp(szArg2, "on") ? true : false, false);
+		s_settings.m_GMPopupEnabled.Write(!_stricmp(szArg2, "on") ? FlagOptions::On : !_stricmp(szArg2, "off") ? FlagOptions::Off : FlagOptions::Toggle);
 	}
 	else if (!_stricmp(szArg1, "chat"))
 	{
 		strcpy_s(szArg2, GetNextArg(szLine));
-		s_settings.SetGMChatAlertEnabled(szArg2[0] ? false : true, !_stricmp(szArg2, "on") ? true : false, false);
+		s_settings.m_GMChatAlertEnabled.Write(!_stricmp(szArg2, "on") ? FlagOptions::On : !_stricmp(szArg2, "off") ? FlagOptions::Off : FlagOptions::Toggle);
 	}
 	else if (!_stricmp(szArg1, "test"))
 	{
@@ -1158,51 +1088,40 @@ void SetupVolumesFromINI()
 
 void DrawGMCheckSettingsPanel()
 {
-	/*
-	static constexpr inline int default_ReminderInterval = 30;
-
-	std::string szGMEnterCmd = std::string();
-	std::string szGMEnterCmdIf = std::string();
-	std::string szGMLeaveCmd = std::string();
-	std::string szGMLeaveCmdIf = std::string();
-	std::filesystem::path Sound_GMEnter = std::filesystem::path(gPathResources) / "Sounds/gmenter.mp3";
-	std::filesystem::path Sound_GMLeave = std::filesystem::path(gPathResources) / "Sounds/gmleave.mp3";
-	std::filesystem::path Sound_GMRemind = std::filesystem::path(gPathResources) / "Sounds/gmremind.mp3";
-	*/
-	bool GMCheckEnabled = s_settings.IsGMCheckEnabled();
+	bool GMCheckEnabled = s_settings.m_GMCheckEnabled.Read();
 	if (ImGui::Checkbox("Checking Enabled", &GMCheckEnabled))
 	{
-		s_settings.SetGMCheckEnabled(GMCheckEnabled);
+		s_settings.m_GMCheckEnabled.Write(GMCheckEnabled ? FlagOptions::On : FlagOptions::Off);
 	}
 
-	bool GMSoundEnabled = s_settings.IsGMSoundEnabled();
+	bool GMSoundEnabled = s_settings.m_GMSoundEnabled.Read();
 	if (ImGui::Checkbox("Sound Playing Enabled", &GMSoundEnabled))
 	{
-		s_settings.SetGMSoundEnabled(GMSoundEnabled);
+		s_settings.m_GMSoundEnabled.Write(GMSoundEnabled ? FlagOptions::On : FlagOptions::Off);
 	}
 
-	bool GMBeepEnabled = s_settings.IsGMBeepEnabled();
+	bool GMBeepEnabled = s_settings.m_GMBeepEnabled.Read();
 	if (ImGui::Checkbox("Beep Enabled", &GMBeepEnabled))
 	{
-		s_settings.SetGMBeepEnabled(GMBeepEnabled);
+		s_settings.m_GMBeepEnabled.Write(GMBeepEnabled ? FlagOptions::On : FlagOptions::Off);
 	}
 
-	bool GMPopupEnabled = s_settings.IsGMPopupEnabled();
+	bool GMPopupEnabled = s_settings.m_GMPopupEnabled.Read();
 	if (ImGui::Checkbox("Popup Enabled", &GMPopupEnabled))
 	{
-		s_settings.SetGMPopupEnabled(GMPopupEnabled);
+		s_settings.m_GMPopupEnabled.Write(GMPopupEnabled ? FlagOptions::On : FlagOptions::Off);
 	}
 
-	bool GMCorpseEnabled = s_settings.IsGMCorpseEnabled();
+	bool GMCorpseEnabled = s_settings.m_GMCorpseEnabled.Read();
 	if (ImGui::Checkbox("Include Corpses", &GMCorpseEnabled))
 	{
-		s_settings.SetGMCorpseEnabled(GMCorpseEnabled);
+		s_settings.m_GMCorpseEnabled.Write(GMCorpseEnabled ? FlagOptions::On : FlagOptions::Off);
 	}
 
-	bool GMChatAlertEnabled = s_settings.IsGMChatAlertEnabled();
+	bool GMChatAlertEnabled = s_settings.m_GMChatAlertEnabled.Read();
 	if (ImGui::Checkbox("Alert in MQ Chat", &GMChatAlertEnabled))
 	{
-		s_settings.SetGMChatAlertEnabled(GMChatAlertEnabled);
+		s_settings.m_GMChatAlertEnabled.Write(GMChatAlertEnabled ? FlagOptions::On : FlagOptions::Off);
 	}
 
 	int GMReminderInterval = s_settings.GetReminderInterval();
@@ -1419,7 +1338,7 @@ PLUGIN_API void OnPulse()
 			if (elapsed.count() > s_settings.GetReminderInterval() * 1000)
 			{
 				reminderstart = clock::now();
-				if (!GMNames.empty() && !s_settings.IsGMQuietEnabled() && s_settings.IsGMCheckEnabled())
+				if (!GMNames.empty() && !s_settings.m_GMQuietEnabled.Read() && s_settings.m_GMCheckEnabled.Read())
 				{
 					std::string joined_names = "\ag";
 					joined_names += join(GMNames, "\ax\am,\ax \ag");
@@ -1433,7 +1352,7 @@ PLUGIN_API void OnPulse()
 
 PLUGIN_API void OnAddSpawn(PlayerClient* pSpawn)
 {
-	if (pLocalPC && s_settings.IsGMCheckEnabled() && pSpawn && pSpawn->GM && (s_settings.IsGMCorpseEnabled() || pSpawn->Type != SPAWN_CORPSE))
+	if (pLocalPC && s_settings.m_GMCheckEnabled.Read() && pSpawn && pSpawn->GM && (s_settings.m_GMCorpseEnabled.Read() || pSpawn->Type != SPAWN_CORPSE))
 	{
 		if (pSpawn->DisplayedName[0] != '\0')
 		{
@@ -1444,7 +1363,7 @@ PLUGIN_API void OnAddSpawn(PlayerClient* pSpawn)
 
 PLUGIN_API void OnRemoveSpawn(PlayerClient* pSpawn)
 {
-	if (s_settings.IsGMCheckEnabled() && !GMNames.empty() && pSpawn && pSpawn->GM)
+	if (s_settings.m_GMCheckEnabled.Read() && !GMNames.empty() && pSpawn && pSpawn->GM)
 	{
 		const size_t start_size = GMNames.size();
 		GMNames.erase(std::remove_if(GMNames.begin(), GMNames.end(), [pSpawn](const std::string& i)
@@ -1464,7 +1383,7 @@ PLUGIN_API void OnEndZone()
 
 PLUGIN_API void OnZoned()
 {
-	s_settings.SetGMQuietEnabled(false);
+	s_settings.m_GMQuietEnabled.Write(FlagOptions::Off, true);
 }
 
 PLUGIN_API void SetGameState(int GameState)
