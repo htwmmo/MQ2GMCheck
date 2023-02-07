@@ -39,9 +39,6 @@ char szGMLeaveCmdIf[MAX_STRING] = { 0 };
 
 int Reminder_Interval = 0;
 uint32_t bmMQ2GMCheck = 0;
-
-uint64_t Check_PulseCount = 0;
-uint64_t Update_PulseCount = 0;
 uint64_t StopSoundTimer = 0;
 
 DWORD dwVolume;
@@ -65,16 +62,10 @@ enum HistoryType {
 	eHistory_All
 };
 
-
-bool GMCheck()
-{
-	return !GMNames.empty();
-}
-
 int MCEval(const char* zBuffer)
 {
 	char zOutput[MAX_STRING] = { 0 };
-	if (!zBuffer[0])
+	if (zBuffer[0] == '\0')
 		return 1;
 
 	strcpy_s(zOutput, zBuffer);
@@ -143,7 +134,7 @@ public:
 		if (!pMember)
 			return false;
 
-		switch ((GMCheckMembers)pMember->ID)
+		switch (pMember->ID)
 		{
 		case GMCheckMembers::Status:
 			Dest.DWord = bGMCheck;
@@ -151,26 +142,20 @@ public:
 			return true;
 
 		case GMCheckMembers::GM:
-			Dest.DWord = GMCheck();
+			Dest.DWord = !GMNames.empty();
 			Dest.Type = pBoolType;
 			return true;
 
 		case GMCheckMembers::Names:
 		{
-			char szTmp[MAX_STRING] = { 0 };
-			for (const std::string& GMName : GMNames)
-			{
-				if (szTmp[0])
-					strcat_s(DataTypeTemp, ", ");
-
-				strcat_s(DataTypeTemp, GMName.c_str());
-			}
-
-			if (!DataTypeTemp[0])
-				strcpy_s(DataTypeTemp, "");
-
 			Dest.Ptr = DataTypeTemp;
 			Dest.Type = pStringType;
+
+			if (GMNames.empty())
+				return false;
+
+			const std::string joined_names = join(GMNames, ", ");
+			strcpy_s(DataTypeTemp, joined_names.c_str());
 			return true;
 		}
 
@@ -284,7 +269,7 @@ public:
 
 	virtual bool ToString(MQVarPtr VarPtr, char* Destination) override
 	{
-		strcpy_s(Destination, MAX_STRING, GMCheck() ? "TRUE" : "FALSE");
+		strcpy_s(Destination, MAX_STRING, GMNames.empty() ? "FALSE" : "TRUE");
 		return true;
 	}
 
@@ -348,7 +333,7 @@ void GMCheckStatus(bool MentionHelp = false)
 	std::error_code ec;
 	std::filesystem::path return_path = file_path;
 	// Only need to worry about it if it doesn't exist (could also not be a file, but that's bad input)
-	if (!exists(return_path, ec))
+	if (!file_path.empty() && !exists(return_path, ec))
 	{
 		// If there is no extension, assume mp3
 		if (!return_path.has_extension())
@@ -391,7 +376,7 @@ void GMCheckStatus(bool MentionHelp = false)
 
 	if (return_path != file_path)
 	{
-		WriteChatf("%s\atWARNING - Sound file could not be found. Replacing \ay%s\ax with \ay%s\ax", PluginMsg, file_path.c_str(), return_path.c_str());
+		WriteChatf("%s\atWARNING - Sound file could not be found. Replacing \"\ay%s\ax\" with \"\ay%s\ax\"", PluginMsg, file_path.string().c_str(), return_path.string().c_str());
 	}
 
 	return return_path;
@@ -684,86 +669,124 @@ void TrackGMs(const char* GMName)
 	iCount = GetPrivateProfileInt(szSection, GMName, 0, INIFileName) + 1;
 	sprintf_s(szTemp, "%d,%s", iCount, szTime);
 	WritePrivateProfileString(szSection, GMName, szTemp, INIFileName);
+}
 
-	return;
+enum class GMStatuses
+{
+	Enter,
+	Leave,
+	Reminder
+};
+
+void DoGMAlert(const char* gm_name, GMStatuses status, bool test=false)
+{
+	char szMsg[MAX_STRING] = { 0 };
+	std::filesystem::path sound_to_play;
+	int overlay_color = CONCOLOR_RED;
+	std::string beep_sound = "SystemDefault";
+	switch(status)
+	{
+	case GMStatuses::Enter:
+		sprintf_s(szMsg, "\arGM %s \ayhas entered the zone at \ar%s", gm_name, DisplayTime());
+		sound_to_play = Sound_GMEnter;
+		beep_sound = "SystemAsterisk";
+		break;
+	case GMStatuses::Leave:
+		sprintf_s(szMsg, "\agGM %s \ayhas left the zone (or gone GM Invis) at \ag%s", gm_name, DisplayTime());
+		sound_to_play = Sound_GMLeave;
+		overlay_color = CONCOLOR_GREEN;
+		break;
+	case GMStatuses::Reminder:
+		sprintf_s(szMsg, "\arGM ALERT!!  \ayGM in zone.  \at(%s\at)", gm_name);
+		sound_to_play = Sound_GMRemind;
+		break;
+	}
+
+	if (bGMChatAlert)
+		WriteChatf("%s%s", PluginMsg, szMsg);
+
+	if (test || (status == GMStatuses::Enter && !bGMCmdActive) || (status == GMStatuses::Leave && bGMCmdActive && GMNames.empty()))
+	{
+		// TODO: This could use some cleanup -- is MCEval even necessary?
+		char szTmpCmd[MAX_STRING] = { 0 };
+		char szTmpIf[MAX_STRING] = { 0 };
+		strcpy_s(szTmpCmd, status == GMStatuses::Enter ? szGMEnterCmd : szGMLeaveCmd);
+		strcpy_s(szTmpIf, status == GMStatuses::Enter ? szGMEnterCmdIf : szGMLeaveCmdIf);
+		if (test)
+		{
+			const int lResult = MCEval(szTmpIf);
+			WriteChatf("%s\at(If GM %s zone): GMEnterCmdIf evaluates to %s\at.  Plugin would %s \atGMEnterCmd: \am%s",
+			PluginMsg, status == GMStatuses::Enter ? "entered" : "left",
+			lResult ? "\agTRUE" : "\arFALSE", lResult ? (szTmpCmd[0] ? (szTmpCmd[0] == '/' ? "\agEXECUTE" : "\arNOT EXECUTE") : "\arNOT EXECUTE") : "\arNOT EXECUTE",
+			szTmpCmd[0] ? (szTmpCmd[0] == '/' ? szTmpCmd : "<IGNORED>") : "<NONE>");
+		}
+		else if (szTmpCmd[0] == '/' && MCEval(szTmpIf))
+		{
+			EzCommand(szTmpCmd);
+			bGMCmdActive = status == GMStatuses::Enter;
+		}
+	}
+
+	if (!bGMQuiet && bGMSound)
+	{
+		PlayGMSound(sound_to_play);
+	}
+
+	if (!bGMQuiet && bGMBeep)
+	{
+		PlayErrorSound(beep_sound.c_str());
+	}
+
+	if (bGMPopup)
+	{
+		StripMQChat(szMsg, szMsg);
+		DisplayOverlayText(szMsg, overlay_color, 100, 500, 500, 3000);
+	}
+}
+
+void AddGM(const char* gm_name)
+{
+	// Do nothing if we're already tracking a GM with this display name
+	if (std::find(GMNames.begin(), GMNames.end(), gm_name) == GMNames.end())
+	{
+		TrackGMs(gm_name);
+		GMNames.emplace_back(gm_name);
+		strcpy_s(szLastGMName, gm_name);
+		strcpy_s(szLastGMTime, DisplayTime());
+		strcpy_s(szLastGMDate, DisplayDate());
+		strcpy_s(szLastGMZone, "UNKNOWN");
+
+		const int zoneid = pLocalPC->get_zoneId();
+		if (zoneid <= MAX_ZONES)
+		{
+			strcpy_s(szLastGMZone, pWorldData->ZoneArray[zoneid]->LongName);
+		}
+
+		DoGMAlert(gm_name, GMStatuses::Enter);
+	}
 }
 
 void GMTest(char* szLine)
 {
-	char szArg[MAX_STRING], szTmp[MAX_STRING] = { 0 };
-	char szMsg[MAX_STRING], szPopup[MAX_STRING];
 	if (gGameState != GAMESTATE_INGAME)
 	{
 		WriteChatf("%s\arMust be in game to use /gmcheck test", PluginMsg);
 		return;
 	}
 
+	char szArg[MAX_STRING] = { 0 };
 	GetArg(szArg, szLine, 1);
-	if (!strncmp(szArg, "enter", 5))
+	if (ci_equals(szArg, "enter"))
 	{
-		sprintf_s(szMsg, "(TEST) \arGM %s \ayhas entered the zone at \ar%s", GetCharInfo()->Name, DisplayTime());
-		sprintf_s(szPopup, "(TEST) GM %s has entered the zone at %s", GetCharInfo()->Name, DisplayTime());
-		WriteChatf("%s%s", PluginMsg, szMsg);
-		strcpy_s(szTmp, szGMEnterCmdIf);
-		int lResult = MCEval(szTmp);
-		WriteChatf("%s\at(If first GM entered zone): GMEnterCmdIf evaluates to %s\at.  Plugin would %s \atGMEnterCmd: \am%s",
-			PluginMsg,
-			lResult ? "\agTRUE" : "\arFALSE", lResult ? (szGMEnterCmd[0] ? (szGMEnterCmd[0] == '/' ? "\agEXECUTE" : "\arNOT EXECUTE") : "\arNOT EXECUTE") : "\arNOT EXECUTE",
-			szGMEnterCmd[0] ? (szGMEnterCmd[0] == '/' ? szGMEnterCmd : "<IGNORED>") : "<NONE>");
-
-		if (!bGMQuiet && bGMSound)
-		{
-			PlayGMSound(Sound_GMEnter);
-		}
-
-		if (!bGMQuiet && bGMBeep)
-		{
-			Beep(0x500, 250);
-			Beep(0x3000, 250);
-			Beep(0x500, 250);
-			Beep(0x3000, 250);
-		}
-
-		if (bGMPopup)
-			DisplayOverlayText(szPopup, CONCOLOR_RED, 100, 500, 500, 3000);
-
-		TrackGMs("NotARealGMThisIsMQTestNPC");
+		DoGMAlert("TestGMEnter", GMStatuses::Enter, true);
 	}
-	else if (!strncmp(szArg, "leave", 5))
+	else if (ci_equals(szArg, "leave"))
 	{
-		sprintf_s(szMsg, "(TEST) \agGM %s \ayhas left the zone (or gone GM Invis) at \ag%s", GetCharInfo()->Name, DisplayTime());
-		sprintf_s(szPopup, "(TEST) GM %s has left the zone (or gone GM Invis) at %s", GetCharInfo()->Name, DisplayTime());
-		WriteChatf("%s%s", PluginMsg, szMsg);
-		strcpy_s(szTmp, szGMLeaveCmdIf);
-		int lResult = MCEval(szTmp);
-		WriteChatf("%s\at(If last GM left zone): GMLeaveCmdIf evaluates to %s\at.  Plugin would %s \atGMLeaveCmd: \am%s",
-			PluginMsg,
-			lResult ? "\agTRUE" : "\arFALSE",
-			lResult ? (szGMLeaveCmd[0] ? (szGMLeaveCmd[0] == '/' ? "\agEXECUTE" : "\arNOT EXECUTE") : "\arNOT EXECUTE") : "\arNOT EXECUTE",
-			szGMLeaveCmd[0] ? (szGMLeaveCmd[0] == '/' ? szGMLeaveCmd : "<IGNORED>") : "<NONE>");
-
-		if (!bGMQuiet && bGMSound)
-		{
-			PlayGMSound(Sound_GMLeave);
-		}
-
-		if (!bGMQuiet && bGMBeep)
-		{
-			Beep(0x600, 250);
-			Beep(0x600, 250);
-			Beep(0x600, 250);
-			Beep(0x600, 250);
-		}
-
-		if (bGMPopup)
-			DisplayOverlayText(szPopup, CONCOLOR_GREEN, 100, 500, 500, 3000);
+		DoGMAlert("TestGMLeave", GMStatuses::Leave, true);
 	}
-	else if (!strncmp(szArg, "remind", 6))
+	else if (ci_equals(szArg, "remind"))
 	{
-		sprintf_s(szMsg, "(TEST) \arGM ALERT!!  \ayGM in zone.  \at(\ag%s\at)", GetCharInfo()->Name);
-		WriteChatf("%s%s", PluginMsg, szMsg);
-		if (bGMSound)
-			PlayGMSound(Sound_GMRemind);
+		DoGMAlert("TestGMRemind", GMStatuses::Reminder, true);
 	}
 	else
 	{
@@ -771,7 +794,7 @@ void GMTest(char* szLine)
 	}
 }
 
-void GMSS(char* szLine)
+void GMSS(const char* szLine)
 {
 	char szArg[MAX_STRING] = { 0 };
 	char szFile[MAX_STRING] = { 0 };
@@ -779,7 +802,7 @@ void GMSS(char* szLine)
 	GetArg(szArg, szLine, 1);
 	GetArg(szFile, szLine, 2);
 
-	if (szFile[0])
+	if (szFile[0] == '\0')
 	{
 		WriteChatf("%s\arFilename required.  Usage: \at/gmcheck ss {enter|leave|remind} SoundFileName", PluginMsg);
 	}
@@ -816,91 +839,10 @@ void GMSS(char* szLine)
 	}
 }
 
-void UpdateAlerts()
-{
-	if (GMNames.empty() || gGameState != GAMESTATE_INGAME || MQGetTickCount64() < Update_PulseCount + 15000)
-		return;
-
-	Update_PulseCount = MQGetTickCount64();
-	uint32_t index = 0;
-	for (const std::string& GMName : GMNames)
-	{
-		PlayerClient* pSpawn = GetSpawnByName(GMName.c_str());
-		if (pSpawn && pSpawn->GM)
-		{
-			index++;
-			continue;
-		}
-
-		if (bGMChatAlert)
-		{
-			char szMsg[MAX_STRING] = { 0 };
-			sprintf_s(szMsg, "\agGM %s \ayhas left the zone (or gone GM Invis) at \ag%s", GMName.c_str(), DisplayTime());
-			WriteChatf("%s%s", PluginMsg, szMsg);
-		}
-
-		if (GMNames.empty() && bGMCmdActive)
-		{
-			char szTmp[MAX_STRING] = { 0 };
-			strcpy_s(szTmp, szGMLeaveCmdIf);
-			if (MCEval(szTmp) && szGMLeaveCmd[0] && szGMLeaveCmd[0] == '/')
-			{
-				EzCommand(szGMLeaveCmd);
-				bGMCmdActive = false;
-			}
-		}
-
-		if (!bGMQuiet && bGMSound)
-		{
-			PlayGMSound(Sound_GMLeave);
-		}
-
-		if (!bGMQuiet && bGMBeep)
-		{
-			PlayErrorSound();
-		}
-
-		if (bGMPopup)
-		{
-			char szPopup[MAX_STRING];
-			sprintf_s(szPopup, "GM %s has left the zone (or gone GM Invis) at %s", GMName.c_str(), DisplayTime());
-			DisplayOverlayText(szPopup, CONCOLOR_GREEN, 100, 500, 500, 3000);
-		}
-
-		GMNames.erase(GMNames.begin() + index);
-	}
-}
-
 void HistoryGMs(HistoryType histValue)
 {
-	/* TODO: Clean up this format, left it for backwards compatibility
-		Format recommended by Knightly
-		[GM]
-		Firhumrng=something
+	// TODO: Clean up this format, left it for backwards compatibility
 
-		[Firhumrng_firiona]
-		LastSeen=Somedate
-		LastZone=somezone
-		TotalTimes=50
-	*/
-
-	/* Current Format.
-		List of GMs.
-			[GM]
-			Firhumrng=20,firiona,Date: 02-02-23 Time: 03:24:05 PM
-			Firhumnec=20,firiona,Date: 02-02-23 Time: 03:24:05 PM
-			Morrganne=4,firiona,Date: 02-02-23 Time: 03:24:05 PM
-
-		List of GMs for this server.
-			[firiona]
-			Firhumrng=20,Date: 02-02-23 Time: 03:24:05 PM
-			Treantz=1,Date: 02-02-23 Time: 03:24:05 PM
-			Niente=29,Date: 02-02-23 Time: 03:24:05 PM
-
-		Zone specific example :
-			[firiona-Cobalt Scar]
-			Firhumrng=1,Date: 02-02-23 Time: 03:24:05 PM
-	*/
 	std::vector<std::string> vKeys;
 	char szSection[MAX_STRING] = { 0 };
 	switch (histValue)
@@ -914,12 +856,9 @@ void HistoryGMs(HistoryType histValue)
 		vKeys = GetPrivateProfileKeys(szSection, INIFileName);
 		break;
 	case eHistory_Zone:
-	{
-
 		sprintf_s(szSection, "%s-%s", GetServerShortName(), pZoneInfo->LongName);
 		vKeys = GetPrivateProfileKeys(szSection, INIFileName);
 		break;
-	}
 	}
 
 	std::vector<std::string> Outputs;
@@ -1051,7 +990,7 @@ void GMCheckCmd(PlayerClient* pChar, char* szLine)
 	else if (!_stricmp(szArg1, "chat"))
 	{
 		strcpy_s(szArg2, GetNextArg(szLine));
-		ToggleBool(szArg2, &bGMChatAlert, "displaying alerts in chat window");
+		ToggleBool(szArg2, &bGMChatAlert, "Displaying alerts in chat window");
 	}
 	else if (!_stricmp(szArg1, "test"))
 	{
@@ -1135,8 +1074,6 @@ PLUGIN_API void InitializePlugin()
 	strcpy_s(szLastGMDate, "NEVER");
 	strcpy_s(szLastGMZone, "NONE");
 	GMNames.clear();
-	Check_PulseCount = MQGetTickCount64();
-	Update_PulseCount = MQGetTickCount64();
 	ReadSettings();
 
 	AddMQ2Data("GMCheck", MQ2GMCheckType::dataGMCheck);
@@ -1160,6 +1097,7 @@ PLUGIN_API void ShutdownPlugin()
 
 PLUGIN_API void OnPulse()
 {
+	// FIXME:  The Pulse checks here should use chrono to be based on time
 	MQScopedBenchmark bm(bmMQ2GMCheck);
 
 	if (bVolSet && StopSoundTimer && MQGetTickCount64() >= StopSoundTimer)
@@ -1168,40 +1106,52 @@ PLUGIN_API void OnPulse()
 		waveOutSetVolume(nullptr, dwVolume);
 	}
 
-	if (!Reminder_Interval)
-		return;
-
 	if (gGameState == GAMESTATE_INGAME)
 	{
-		UpdateAlerts();
-		if (MQGetTickCount64() >= Check_PulseCount + Reminder_Interval && Reminder_Interval)
+		static uint64_t Update_PulseCount = MQGetTickCount64();
+
+		if (MQGetTickCount64() > Update_PulseCount)
 		{
-			Check_PulseCount = MQGetTickCount64();
-			if (GMCheck() && !bGMQuiet && bGMCheck)
+			Update_PulseCount = MQGetTickCount64() + 15000;
+
+			// Remove any GMs that left
+			if (!GMNames.empty())
 			{
-				char szNames[MAX_STRING] = { 0 };
-				for (const std::string& GMName : GMNames)
+				GMNames.erase(std::remove_if(GMNames.begin(), GMNames.end(), [](const std::string& gm_name)
 				{
-					if (strlen(szNames) > 500)
-					{
-						strcat_s(szNames, " ...");
-						break;
-					}
+					const PlayerClient* pSpawn = GetSpawnByName(gm_name.c_str());
+					if (pSpawn && pSpawn->GM)
+						return false;
 
-					if (szNames[0])
-						strcat_s(szNames, "\am, ");
+					DoGMAlert(pSpawn->DisplayedName, GMStatuses::Leave);
+					return true;
+				}), GMNames.end());
+			}
 
-					strcat_s(szNames, "\ag");
-					strcat_s(szNames, GMName.c_str());
+			// Add any GMs that appeared
+			SPAWNINFO* pSpawn = pSpawnList;
+			while (pSpawn) {
+				if (pSpawn->GM)
+				{
+					AddGM(pSpawn->DisplayedName);
 				}
+				pSpawn = pSpawn->GetNext();
+			}
+		}
 
-				char szTmp[MAX_STRING] = { 0 };
-				sprintf_s(szTmp, "\arGM ALERT!!  \ayGM in zone.  \at(%s\at)", szNames);
-				if (bGMChatAlert)
-					WriteChatf("%s%s", PluginMsg, szTmp);
+		if (Reminder_Interval > 0)
+		{
+			static uint64_t Check_PulseCount = MQGetTickCount64() + Reminder_Interval;
+			if (MQGetTickCount64() > Check_PulseCount)
+			{
+				Check_PulseCount = MQGetTickCount64() + Reminder_Interval;
+				if (!GMNames.empty() && !bGMQuiet && bGMCheck)
+				{
+					std::string joined_names = "\ag";
+					joined_names += join(GMNames, "\ax\am,\ax \ag");
 
-				if (bGMSound)
-					PlayGMSound(Sound_GMRemind);
+					DoGMAlert(joined_names.c_str(), GMStatuses::Reminder);
+				}
 			}
 		}
 	}
@@ -1211,109 +1161,25 @@ PLUGIN_API void OnAddSpawn(PlayerClient* pSpawn)
 {
 	if (pLocalPC && bGMCheck && pSpawn && pSpawn->GM && (bGMCorpse || pSpawn->Type != SPAWN_CORPSE))
 	{
-		if (!strlen(pSpawn->DisplayedName))
-			return;
-
-		TrackGMs(pSpawn->DisplayedName);
-		GMNames.push_back(pSpawn->DisplayedName);
-		strcpy_s(szLastGMName, pSpawn->DisplayedName);
-		strcpy_s(szLastGMTime, DisplayTime());
-		strcpy_s(szLastGMDate, DisplayDate());
-		strcpy_s(szLastGMZone, "UNKNOWN");
-
-		int zoneid = (pLocalPC->zoneId & 0x7FFF);
-		if (zoneid <= MAX_ZONES)
+		if (pSpawn->DisplayedName[0] != '\0')
 		{
-			strcpy_s(szLastGMZone, pWorldData->ZoneArray[zoneid]->LongName);
+			AddGM(pSpawn->DisplayedName);
 		}
-
-		char szMsg[MAX_STRING] = { 0 };
-		sprintf_s(szMsg, "\arGM %s \ayhas entered the zone at \ar%s", pSpawn->DisplayedName, DisplayTime());
-
-		char szPopup[MAX_STRING];
-		sprintf_s(szPopup, "GM %s has entered the zone at %s", pSpawn->DisplayedName, DisplayTime());
-
-		if (bGMChatAlert)
-			WriteChatf("%s%s", PluginMsg, szMsg);
-
-		if (!bGMCmdActive)
-		{
-			char szTmp[MAX_STRING] = { 0 };
-			strcpy_s(szTmp, szGMEnterCmdIf);
-			if (MCEval(szTmp) && szGMEnterCmd[0] && szGMEnterCmd[0] == '/')
-			{
-				EzCommand(szGMEnterCmd);
-				bGMCmdActive = true;
-			}
-		}
-
-		if (!bGMQuiet && bGMSound)
-		{
-			PlayGMSound(Sound_GMEnter);
-		}
-
-		if (!bGMQuiet && bGMBeep)
-		{
-			PlayErrorSound("SystemAsterisk");
-		}
-
-		if (bGMPopup)
-			DisplayOverlayText(szPopup, CONCOLOR_RED, 100, 500, 500, 3000);
 	}
 }
 
 PLUGIN_API void OnRemoveSpawn(PlayerClient* pSpawn)
 {
-	if (bGMCheck && pSpawn && pSpawn->GM)
+	if (bGMCheck && !GMNames.empty() && pSpawn && pSpawn->GM)
 	{
-		bool GMFound = false;
-		for (unsigned int x = 0; x < GMNames.size(); x++)
+		const size_t start_size = GMNames.size();
+		GMNames.erase(std::remove_if(GMNames.begin(), GMNames.end(), [pSpawn](const std::string& i)
 		{
-			std::string& VectorRef = GMNames[x];
-			if (!_stricmp(pSpawn->DisplayedName, VectorRef.c_str()))
-			{
-				GMNames.erase(GMNames.begin() + x);
-				GMFound = true;
-			}
-		}
+			return ci_equals(i, pSpawn->DisplayedName);
+		}), GMNames.end());
 
-		if (!GMFound)
-			return;
-
-		if (bGMChatAlert)
-		{
-			char szMsg[MAX_STRING] = { 0 };
-			sprintf_s(szMsg, "\agGM %s \ayhas left the zone (or gone GM Invis) at \ag%s", pSpawn->DisplayedName, DisplayTime());
-			WriteChatf("%s%s", PluginMsg, szMsg);
-		}
-
-		if (GMNames.empty() && bGMCmdActive)
-		{
-			char szTmp[MAX_STRING] = { 0 };
-			strcpy_s(szTmp, szGMLeaveCmdIf);
-			if (MCEval(szTmp) && szGMLeaveCmd[0] && szGMLeaveCmd[0] == '/')
-			{
-				EzCommand(szGMLeaveCmd);
-				bGMCmdActive = false;
-			}
-		}
-
-		if (!bGMQuiet && bGMSound)
-		{
-			PlayGMSound(Sound_GMLeave);
-		}
-
-		if (!bGMQuiet && bGMBeep)
-		{
-			PlayErrorSound();
-		}
-
-		if (bGMPopup)
-		{
-			char szPopup[MAX_STRING] = { 0 };
-			sprintf_s(szPopup, "GM %s has left the zone (or gone GM Invis) at %s", pSpawn->DisplayedName, DisplayTime());
-			DisplayOverlayText(szPopup, CONCOLOR_GREEN, 100, 500, 500, 3000);
-		}
+		if (GMNames.size() != start_size)
+			DoGMAlert(pSpawn->DisplayedName, GMStatuses::Leave);
 	}
 }
 
