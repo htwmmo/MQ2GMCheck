@@ -28,6 +28,7 @@ MQ2GMCheck provides one command with several options:
 <span style="color: blue;">/gmcheck popup [off|on]</span> : <span style="color: green;">Toggles showing a popup msg for alerts, or force on/off.</span>  
 <span style="color: blue;">/gmcheck chat [off|on]</span> : <span style="color: green;">Toggles showing gm alerts in the mq2 chat window, or force on/off.</span>  
 <span style="color: blue;">/gmcheck corpse [off|on]</span> : <span style="color: green;">Toggles filtering of alerts for GM corpses, or force on/off.</span>  
+<span style="color: blue;">/gmcheck exclude [off|on]</span> : <span style="color: green;">Toggle GM alert being ignored if in a zone defined by ExcludeZoneList, or force on/off.</span>  
 <span style="color: blue;">/gmcheck rem ##</span> : <span style="color: green;">Change alert reminder interval, in seconds (0 to disable).</span>  
 <span style="color: blue;">/gmcheck save</span> : <span style="color: green;">Saves current options to MQ2GMCheck.ini</span>  
 <span style="color: blue;">/gmcheck load</span> : <span style="color: green;">Load settings from MQ2GMCheck.ini</span>  
@@ -49,6 +50,7 @@ Sound - Play sound files for alerts.
 Beep - Beep the PC speaker for alerts (or play PC beep).  
 Popup - Show popup overlays for alerts.  
 Corpse - Exclude GM corpses from alerts.  
+ExcludeZones - Exclude zones listed in ExcludeZoneList from GM alerts.  
 RemInt - Number of seconds for reminder interval.  
 EnterSound - Alert enter sound filename.  
 LeaveSound - Alert leave sound filename.  
@@ -57,7 +59,8 @@ GMEnterCmd - Command to execute when 1st GM enters zone.
 GMEnterCmdIf - Optional evaluation to fine tune GMEnterCmd.  
 GMLeaveCmd - Command to execute when last GM exits zone.  
 GMLeaveCmdIf - Optional evaluation to fine tune GMLeaveCmd.  
-
+ExcludeZoneList - List of zones to exclude from alerts if ExcludeZones is on, separated by |  
+  
 In addition, you can have a Section Name corresponding to a GM name, and those custom enter/leave sounds will be played for that GM instead:
 
 `[GMFirstName]`
@@ -76,6 +79,7 @@ GMBeep=off
 GMPopup=on  
 GMChat=on  
 GMCorpse=off  
+ExcludeZones=1  
 RemInt=30  
 EnterSound=c:\mq\resources\sounds\gmenter.mp3  
 LeaveSound=c:\mq\resources\sounds\gmleave.mp3  
@@ -84,6 +88,7 @@ GMEnterCmdIf=${If[${Zone.ID}==344 || ${Zone.ID}==345,1,0]}
 GMEnterCmd=/multiline ; /end ; /camp desktop  
 GMLeaveCmdIf=${If[${Zone.ID}==344 || ${Zone.ID}==345,1,0]}  
 GMLeaveCmd=  
+ExcludeZoneList=nexus|poknowledge  
 
 [Deodan]  
 EnterSound=c:\mq\resources\sounds\prickishere.wav  
@@ -98,3 +103,4 @@ Finally, your INI stores a history of GM names you've encountered in your travel
 
 * **htw** - *Initial work*
 * **ChatWithThisName** - *Refactor and merge two versions features together*
+* **htw** - *Additional fixes and maintenance, addition of exclude zones options*
